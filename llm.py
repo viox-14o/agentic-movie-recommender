@@ -1,9 +1,8 @@
 """
 TODO: This is the file you should edit.
 
-get_recommendation() is called once per request with the user's input and the
-candidate DataFrame. It should return a dict with keys "tmdb_id" and
-"description".
+get_recommendation() is called once per request with the user's input.
+It should return a dict with keys "tmdb_id" and "description".
 
 build_prompt() and call_llm() are broken out as separate functions so they are
 easy to swap or extend individually, but you are free to restructure this file
@@ -16,13 +15,20 @@ import os
 import pandas as pd
 from openai import OpenAI
 
+# ---------------------------------------------------------------------------
+# TODO: Edit these to improve your recommendations
+# ---------------------------------------------------------------------------
+
 MODEL = "gpt-5-nano"
 
+DATA_PATH = os.path.join(os.path.dirname(__file__), "tmdb_top1000_movies.csv")
+TOP_MOVIES = pd.read_csv(DATA_PATH).nlargest(40, "vote_count")
 
-def build_prompt(preferences: str, history: list[str], candidates: pd.DataFrame) -> str:
+
+def build_prompt(preferences: str, history: list[str]) -> str:
     movie_list = "\n".join(
         f'- tmdb_id={row.tmdb_id} | "{row.title}" ({row.year}) | genres: {row.genres} | overview: {row.overview[:200]}'
-        for row in candidates.itertuples()
+        for row in TOP_MOVIES.itertuples()
     )
     history_text = ", ".join(f'"{name}"' for name in history) if history else "none"
     return f"""You are a movie recommendation assistant.
@@ -54,22 +60,13 @@ def call_llm(prompt: str) -> dict:
     return json.loads(response.choices[0].message.content)
 
 
-def get_recommendation(
-    preferences: str,
-    history: list[str],
-    candidates: pd.DataFrame,
-) -> dict:
+def get_recommendation(preferences: str, history: list[str]) -> dict:
     """Return a dict with keys 'tmdb_id' (int) and 'description' (str)."""
-    prompt = build_prompt(preferences, history, candidates)
+    prompt = build_prompt(preferences, history)
     return call_llm(prompt)
 
 
 if __name__ == "__main__":
-    import os, pandas as pd
-
-    DATA_PATH = os.path.join(os.path.dirname(__file__), "tmdb_top1000_movies.csv")
-    candidates = pd.read_csv(DATA_PATH).nlargest(40, "vote_count")
-
     print("Movie recommender – type your preferences and press Enter.")
     print("For watch history, enter comma-separated movie titles (or leave blank).")
     print()
@@ -79,9 +76,9 @@ if __name__ == "__main__":
     history = [t.strip() for t in history_raw.split(",")] if history_raw else []
 
     print("\nThinking...\n")
-    result = get_recommendation(preferences, history, candidates)
+    result = get_recommendation(preferences, history)
 
-    match = candidates[candidates["tmdb_id"] == result["tmdb_id"]]
+    match = TOP_MOVIES[TOP_MOVIES["tmdb_id"] == result["tmdb_id"]]
     title = match.iloc[0]["title"] if not match.empty else "unknown"
 
     print(f"Recommendation: {title} (tmdb_id={result['tmdb_id']})")

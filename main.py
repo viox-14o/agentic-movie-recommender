@@ -1,20 +1,9 @@
 import os
 
-import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from llm import get_recommendation
-
-# ---------------------------------------------------------------------------
-# DO NOT EDIT: Data loading
-# ---------------------------------------------------------------------------
-
-DATA_PATH = os.path.join(os.path.dirname(__file__), "tmdb_top1000_movies.csv")
-TOP_N = 40
-
-df = pd.read_csv(DATA_PATH)
-TOP_MOVIES = df.nlargest(TOP_N, "vote_count")
+from llm import TOP_MOVIES, get_recommendation
 
 # ---------------------------------------------------------------------------
 # DO NOT EDIT: FastAPI app and request/response schemas
@@ -57,7 +46,7 @@ def recommend(request: RecommendRequest):
 
     history_names = [h.name for h in request.history]
     try:
-        result = get_recommendation(request.preferences, history_names, TOP_MOVIES)
+        result = get_recommendation(request.preferences, history_names)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
 
