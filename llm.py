@@ -25,13 +25,14 @@ DATA_PATH = os.path.join(os.path.dirname(__file__), "tmdb_top1000_movies.csv")
 TOP_MOVIES = pd.read_csv(DATA_PATH).nlargest(40, "vote_count")
 
 
-def build_prompt(preferences: str, history: list[str]) -> str:
+def get_recommendation(preferences: str, history: list[str]) -> dict:
+    """Return a dict with keys 'tmdb_id' (int) and 'description' (str)."""
     movie_list = "\n".join(
         f'- tmdb_id={row.tmdb_id} | "{row.title}" ({row.year}) | genres: {row.genres} | overview: {row.overview[:200]}'
         for row in TOP_MOVIES.itertuples()
     )
     history_text = ", ".join(f'"{name}"' for name in history) if history else "none"
-    return f"""You are a movie recommendation assistant.
+    prompt = f"""You are a movie recommendation assistant.
 
 A user is looking for a movie to watch. Here are their preferences:
 "{preferences}"
@@ -49,8 +50,6 @@ Respond with ONLY a JSON object — no markdown, no extra text — in this exact
   "description": "<a compelling blurb ≤500 chars that tells the user why this movie matches their preferences>"
 }}"""
 
-
-def call_llm(prompt: str) -> dict:
     client = ollama.Client(
         host="https://ollama.com",
         headers={"Authorization": f"Bearer {os.environ['OLLAMA_API_KEY']}"},
@@ -61,12 +60,6 @@ def call_llm(prompt: str) -> dict:
         format="json",
     )
     return json.loads(response.message.content)
-
-
-def get_recommendation(preferences: str, history: list[str]) -> dict:
-    """Return a dict with keys 'tmdb_id' (int) and 'description' (str)."""
-    prompt = build_prompt(preferences, history)
-    return call_llm(prompt)
 
 
 if __name__ == "__main__":
