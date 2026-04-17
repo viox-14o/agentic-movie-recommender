@@ -7,6 +7,11 @@ It should return a dict with keys "tmdb_id" and "description".
 build_prompt() and call_llm() are broken out as separate functions so they are
 easy to swap or extend individually, but you are free to restructure this file
 however you like.
+
+IMPORTANT: Do NOT hard-code your API key in this file. The grader will supply
+its own OLLAMA_API_KEY environment variable when running your submission. Your
+code must read it from the environment (os.environ or os.getenv), not from a
+string literal in the source.
 """
 
 import json
