@@ -156,17 +156,39 @@ def call_llm(prompt: str) -> dict:
         host="https://ollama.com",
         headers={"Authorization": f"Bearer {os.environ['OLLAMA_API_KEY']}"},
     )
-    response = client.chat(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        format="json",
-    )
-    result = json.loads(response.message.content)
-    if "tmdb_id" in result:
-        result["tmdb_id"] = int(result["tmdb_id"])
-    if "description" in result:
-        result["description"] = str(result["description"])[:500]
-    return result
+    for attempt in range(2):
+        response = client.chat(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            format="json",
+        )
+        content = response.message.content.strip()
+        if not content:
+            continue
+        try:
+            result = json.loads(content)
+            if "tmdb_id" in result:
+                result["tmdb_id"] = int(result["tmdb_id"])
+            if "description" in result:
+                result["description"] = str(result["description"])[:500]
+            return result
+        except json.JSONDecodeError:
+            if attempt == 1:
+                raise
+    raise ValueError("LLM returned empty response after 2 attempts")
+
+
+def _fallback_response(candidates: pd.DataFrame, history_id_set: set) -> dict:
+    """Build a safe response from top candidate without calling the LLM."""
+    for _, row in candidates.iterrows():
+        tid = int(row["tmdb_id"])
+        if tid in history_id_set:
+            continue
+        overview = str(row.get("overview") or "").strip()
+        desc = overview[:497] + "..." if len(overview) > 500 else overview
+        return {"tmdb_id": tid, "description": desc}
+    # Should never reach here — candidates always has unseen movies
+    raise RuntimeError("No valid candidate available")
 
 
 def get_recommendation(preferences: str, history: list[str], history_ids: list[int] = []) -> dict:
@@ -175,14 +197,17 @@ def get_recommendation(preferences: str, history: list[str], history_ids: list[i
 
     candidates = _select_candidates(preferences, history_id_set, n=8)
     prompt = build_prompt(preferences, history, history_ids, candidates)
-    result = call_llm(prompt)
+
+    try:
+        result = call_llm(prompt)
+    except Exception:
+        return _fallback_response(candidates, history_id_set)
 
     # Validate: returned tmdb_id must be in the full database and not in history
     all_valid_ids = set(TOP_MOVIES["tmdb_id"].astype(int))
     tid = result.get("tmdb_id")
     if tid not in all_valid_ids or tid in history_id_set:
-        best = candidates.iloc[0]
-        result["tmdb_id"] = int(best["tmdb_id"])
+        result["tmdb_id"] = int(candidates.iloc[0]["tmdb_id"])
 
     return result
 
