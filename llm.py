@@ -1,67 +1,168 @@
 """
-TODO: This is the file you should edit.
+Movie recommendation agent using LLM with smart candidate selection.
 
-get_recommendation() is called once per request with the user's input.
-It should return a dict with keys "tmdb_id" and "description".
-
-build_prompt() and call_llm() are broken out as separate functions so they are
-easy to swap or extend individually, but you are free to restructure this file
-however you like.
-
-IMPORTANT: Do NOT hard-code your API key in this file. The grader will supply
-its own OLLAMA_API_KEY environment variable when running your submission. Your
-code must read it from the environment (os.environ or os.getenv), not from a
-string literal in the source.
+Two-stage approach:
+  1. Score all 1000 movies by genre/keyword relevance to user preferences
+  2. Pass the top ~15 candidates to the LLM for final selection + description
 """
 
 import json
 import os
+import re
 import time
 import argparse
 
 import ollama
 import pandas as pd
 
-# ---------------------------------------------------------------------------
-# TODO: Edit these to improve your recommendations
-# ---------------------------------------------------------------------------
-
 MODEL = "gemma4:31b-cloud"
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "tmdb_top1000_movies.csv")
-TOP_MOVIES = pd.read_csv(DATA_PATH).nlargest(5, "vote_count")
+# Load ALL movies so test.py's VALID_IDS covers the full 1000-movie database
+TOP_MOVIES = pd.read_csv(DATA_PATH)
+
+# Genre/theme triggers used to match user preferences against movie metadata
+_GENRE_TRIGGERS = {
+    "Action":          ["action", "fight", "war", "combat", "battle", "explosive", "guns"],
+    "Comedy":          ["comedy", "funny", "humor", "laugh", "hilarious", "comedic", "fun"],
+    "Drama":           ["drama", "emotional", "serious", "moving", "touching", "oscar"],
+    "Horror":          ["horror", "scary", "terrifying", "fear", "ghost", "monster", "zombie"],
+    "Romance":         ["romance", "romantic", "love story", "relationship", "dating"],
+    "Science Fiction": ["science fiction", "sci-fi", "scifi", "space", "future", "robot", "alien"],
+    "Animation":       ["animation", "animated", "cartoon", "pixar", "disney"],
+    "Crime":           ["crime", "mystery", "detective", "noir", "heist", "murder", "whodunit"],
+    "Adventure":       ["adventure", "quest", "journey", "expedition", "explore"],
+    "Thriller":        ["thriller", "suspense", "tense", "psychological"],
+    "Fantasy":         ["fantasy", "magic", "wizard", "witch", "dragon", "mythology"],
+    "Family":          ["family", "kids", "children", "wholesome", "feel-good"],
+    "Biography":       ["biography", "biopic", "true story", "based on real"],
+    "Superhero":       ["superhero", "marvel", "avengers", "batman", "spider-man", "superpower"],
+    "Buddy":           ["buddy cop", "buddy", "duo", "partners", "partner"],
+    "Western":         ["western", "cowboy", "wild west"],
+}
+
+_STOP_WORDS = {
+    "love", "like", "want", "good", "great", "movie", "film", "watch", "with",
+    "that", "this", "from", "have", "been", "will", "they", "their", "there",
+    "some", "also", "more", "very", "much", "most", "feel", "something", "anything",
+    "really", "enjoy", "kind", "looking", "would", "could", "enjoy", "need",
+}
 
 
-def get_recommendation(preferences: str, history: list[str], history_ids: list[int] = []) -> dict:
-    """Return a dict with keys 'tmdb_id' (int) and 'description' (str)."""
-    movie_list = "\n".join(
-        f'- tmdb_id={row.tmdb_id} | "{row.title}" ({row.year}) | genres: {row.genres} | overview: {row.overview[:200]}'
-        for row in TOP_MOVIES.itertuples()
+def _score_movie(row: pd.Series, pref_lower: str, history_ids: set) -> float:
+    """Relevance score for one movie row; returns -1 for history movies."""
+    if int(row["tmdb_id"]) in history_ids:
+        return -1.0
+
+    genres_lower = str(row.get("genres") or "").lower()
+    overview_lower = str(row.get("overview") or "").lower()
+    kw_lower = str(row.get("keywords") or "").lower()
+    cast_lower = str(row.get("top_cast") or "").lower()
+    movie_text = f"{genres_lower} {kw_lower} {overview_lower} {cast_lower}"
+
+    score = 0.0
+
+    # Genre/theme alignment (strong signal)
+    for genre, triggers in _GENRE_TRIGGERS.items():
+        in_pref = any(t in pref_lower for t in triggers)
+        in_movie = genre.lower() in genres_lower or any(t in movie_text for t in triggers[:3])
+        if in_pref and in_movie:
+            score += 4.0
+
+    # Token-level preference matching
+    pref_tokens = [w for w in re.findall(r"\b[a-z]{4,}\b", pref_lower) if w not in _STOP_WORDS]
+    for token in pref_tokens:
+        if token in movie_text:
+            score += 0.6
+
+    # Quality signals (vote_average and popularity of vote_count)
+    try:
+        va = float(row.get("vote_average") or 0)
+        vc = float(row.get("vote_count") or 0)
+        score += va * 0.25 + min(vc / 15000, 2.0)
+    except (TypeError, ValueError):
+        pass
+
+    return score
+
+
+def _select_candidates(preferences: str, history_ids: set, n: int = 15) -> pd.DataFrame:
+    """Return up to N movies ranked by relevance, excluding already-seen movies."""
+    pref_lower = preferences.lower()
+    scores = TOP_MOVIES.apply(lambda r: _score_movie(r, pref_lower, history_ids), axis=1)
+
+    df = TOP_MOVIES.copy()
+    df["_score"] = scores
+    candidates = df[df["_score"] >= 0].nlargest(n, "_score")
+
+    # Fallback: pad with top-rated unseen movies if needed
+    if len(candidates) < 5:
+        seen_ids = set(candidates["tmdb_id"].astype(int)) | history_ids
+        fallback = (
+            df[~df["tmdb_id"].astype(int).isin(seen_ids)]
+            .nlargest(n - len(candidates), "vote_count")
+        )
+        candidates = pd.concat([candidates, fallback])
+
+    return candidates.head(n).reset_index(drop=True)
+
+
+def _format_candidate(row: pd.Series) -> str:
+    genres = str(row.get("genres") or "").strip()
+    overview = str(row.get("overview") or "").strip()[:220]
+    director = str(row.get("director") or "").strip()
+    cast = ", ".join(str(row.get("top_cast") or "").split(",")[:4]).strip()
+    keywords = str(row.get("keywords") or "").strip()[:80]
+    va = row.get("vote_average")
+    rating = f"{float(va):.1f}/10" if pd.notna(va) and va else ""
+    year = int(row.get("year") or 0)
+    return (
+        f'[tmdb_id={int(row["tmdb_id"])}] "{row["title"]}" ({year})\n'
+        f"  Genres: {genres} | Rating: {rating} | Director: {director}\n"
+        f"  Cast: {cast}\n"
+        f"  Keywords: {keywords}\n"
+        f"  Overview: {overview}"
     )
+
+
+def build_prompt(
+    preferences: str,
+    history: list[str],
+    history_ids: list[int],
+    candidates: pd.DataFrame,
+) -> str:
     history_text = (
-        ", ".join(
-            f'"{name}" (tmdb_id={tid})' for name, tid in zip(history, history_ids)
-        ) if history else "none"
+        "; ".join(f'"{n}" (id={i})' for n, i in zip(history, history_ids))
+        if history
+        else "none"
     )
-    prompt = f"""You are a movie recommendation assistant.
+    movie_list = "\n\n".join(_format_candidate(row) for _, row in candidates.iterrows())
 
-A user is looking for a movie to watch. Here are their preferences:
-"{preferences}"
+    return f"""You are an expert film critic and passionate movie recommender. Your goal: select the single best movie from the list below for this user and write a short, irresistible pitch that makes them genuinely excited to watch it.
 
-Movies they have already watched (do NOT recommend these):
-{history_text}
+USER PREFERENCES: "{preferences}"
 
-Below is the list of candidate movies you may recommend. You MUST pick exactly one.
+ALREADY WATCHED — NEVER recommend these: {history_text}
 
+CANDIDATE MOVIES — you MUST choose exactly one tmdb_id from this list:
 {movie_list}
 
-Respond with ONLY a JSON object — no markdown, no extra text — in this exact format:
-{{
-  "tmdb_id": <integer>,
-  "description": "<a compelling blurb ≤500 chars that tells the user why this movie matches their preferences>"
-}}"""
-    print(prompt)
+Selection criteria:
+- Best match to the user's stated preferences (genre, themes, mood)
+- High quality (good ratings, well-known cast/director)
+- Something genuinely interesting to recommend
 
+Description requirements (CRITICAL):
+- Under 500 characters — violating this disqualifies the response
+- Personal: explain why THIS user with THEIR preferences will love it
+- Exciting: create urgency and enthusiasm
+- Specific: mention a compelling detail (director, cast, theme) without spoiling plot twists
+
+Output ONLY valid JSON, no markdown, no extra keys:
+{{"tmdb_id": <integer from the list above>, "description": "<your pitch under 500 chars>"}}"""
+
+
+def call_llm(prompt: str) -> dict:
     client = ollama.Client(
         host="https://ollama.com",
         headers={"Authorization": f"Bearer {os.environ['OLLAMA_API_KEY']}"},
@@ -71,29 +172,37 @@ Respond with ONLY a JSON object — no markdown, no extra text — in this exact
         messages=[{"role": "user", "content": prompt}],
         format="json",
     )
-    return json.loads(response.message.content)
+    result = json.loads(response.message.content)
+    if "tmdb_id" in result:
+        result["tmdb_id"] = int(result["tmdb_id"])
+    if "description" in result:
+        result["description"] = str(result["description"])[:500]
+    return result
+
+
+def get_recommendation(preferences: str, history: list[str], history_ids: list[int] = []) -> dict:
+    """Return a dict with keys 'tmdb_id' (int) and 'description' (str)."""
+    history_id_set = {int(i) for i in history_ids}
+
+    candidates = _select_candidates(preferences, history_id_set, n=15)
+    prompt = build_prompt(preferences, history, history_ids, candidates)
+    result = call_llm(prompt)
+
+    # Validate: returned tmdb_id must be in the full database and not in history
+    all_valid_ids = set(TOP_MOVIES["tmdb_id"].astype(int))
+    tid = result.get("tmdb_id")
+    if tid not in all_valid_ids or tid in history_id_set:
+        best = candidates.iloc[0]
+        result["tmdb_id"] = int(best["tmdb_id"])
+
+    return result
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Run a local movie recommendation test."
-    )
-    parser.add_argument(
-        "--preferences",
-        type=str,
-        help="User preferences text. If omitted, you will be prompted.",
-    )
-    parser.add_argument(
-        "--history",
-        type=str,
-        help='Comma-separated watch history titles. Example: "The Avengers, Up"',
-    )
+    parser = argparse.ArgumentParser(description="Run a local movie recommendation test.")
+    parser.add_argument("--preferences", type=str)
+    parser.add_argument("--history", type=str, help='Comma-separated titles, e.g. "The Avengers, Up"')
     args = parser.parse_args()
-
-    print("Movie recommender – type your preferences and press Enter.")
-    print(
-        "For watch history, enter comma-separated movie titles (or leave blank)."
-    )
 
     preferences = (
         args.preferences.strip()
@@ -105,17 +214,11 @@ if __name__ == "__main__":
         if args.history and args.history.strip()
         else input("Watch history (optional): ").strip()
     )
-    history = (
-        [t.strip() for t in history_raw.split(",") if t.strip()]
-        if history_raw
-        else []
-    )
+    history = [t.strip() for t in history_raw.split(",") if t.strip()] if history_raw else []
 
     print("\nThinking...\n")
     start = time.perf_counter()
     result = get_recommendation(preferences, history)
     print(result)
     elapsed = time.perf_counter() - start
-
     print(f"\nServed in {elapsed:.2f}s")
-
