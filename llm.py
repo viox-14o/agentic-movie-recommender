@@ -124,6 +124,29 @@ def _format_candidate(row: pd.Series) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Few-shot examples that demonstrate the ideal description style:
+# personal, punchy, preference-linked, under 500 chars, no spoilers.
+# ---------------------------------------------------------------------------
+_FEW_SHOT = """EXAMPLES OF GREAT RECOMMENDATIONS (use these as style guides):
+
+Example A
+User preferences: "I love intense psychological thrillers with unexpected twists"
+Chosen tmdb_id: 157336
+Description: "If mind-bending twists are your thing, Interstellar will leave you speechless. Nolan sends a desperate father through a wormhole where time itself becomes the enemy — every revelation reframes everything before it. Gripping, emotional, and visually unlike anything else. One of the most debated endings in modern cinema."
+
+Example B
+User preferences: "funny feel-good movies I can watch with friends"
+Chosen tmdb_id: 120467
+Description: "The Grand Budapest Hotel is pure joy — Wes Anderson's wittiest, most delirious caper follows a legendary concierge and his loyal lobby boy through a hilarious murder mystery. Ralph Fiennes is a comedic revelation. It's laugh-out-loud funny, gorgeous to look at, and impossible not to love."
+
+Example C
+User preferences: "action-packed superhero films with great ensemble casts"
+Chosen tmdb_id: 299536
+Description: "Avengers: Infinity War is the superhero ensemble you've been waiting for. Every hero you love faces Thanos — the most formidable villain in the genre — in a film that actually has real stakes. The Russo brothers juggle a massive cast masterfully. Prepare for the most shocking finale in Marvel history."
+"""
+
+
 def build_prompt(
     preferences: str,
     history: list[str],
@@ -137,28 +160,26 @@ def build_prompt(
     )
     movie_list = "\n\n".join(_format_candidate(row) for _, row in candidates.iterrows())
 
-    return f"""You are an expert film critic and passionate movie recommender. Your goal: select the single best movie from the list below for this user and write a short, irresistible pitch that makes them genuinely excited to watch it.
+    return f"""You are an expert film critic. Your job: pick the single best movie from the candidate list for this user, then write a pitch so compelling they immediately want to watch it.
+
+{_FEW_SHOT}
+---
+
+Now handle this user:
 
 USER PREFERENCES: "{preferences}"
-
 ALREADY WATCHED — NEVER recommend these: {history_text}
 
-CANDIDATE MOVIES — you MUST choose exactly one tmdb_id from this list:
+CANDIDATE MOVIES — pick exactly one tmdb_id from this list:
 {movie_list}
 
-Selection criteria:
-- Best match to the user's stated preferences (genre, themes, mood)
-- High quality (good ratings, well-known cast/director)
-- Something genuinely interesting to recommend
+Step-by-step reasoning (do this internally before answering):
+1. What core genres, moods, and themes does this user want?
+2. Which candidate best satisfies ALL of those criteria?
+3. What 1-2 specific details about that film will excite THIS user?
 
-Description requirements (CRITICAL):
-- Under 500 characters — violating this disqualifies the response
-- Personal: explain why THIS user with THEIR preferences will love it
-- Exciting: create urgency and enthusiasm
-- Specific: mention a compelling detail (director, cast, theme) without spoiling plot twists
-
-Output ONLY valid JSON, no markdown, no extra keys:
-{{"tmdb_id": <integer from the list above>, "description": "<your pitch under 500 chars>"}}"""
+Output ONLY valid JSON — no markdown, no extra keys:
+{{"tmdb_id": <integer from the list>, "description": "<your pitch, max 500 chars, personal and exciting>"}}"""
 
 
 def call_llm(prompt: str) -> dict:
