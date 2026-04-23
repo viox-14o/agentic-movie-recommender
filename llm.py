@@ -108,42 +108,20 @@ def _select_candidates(preferences: str, history_ids: set, n: int = 15) -> pd.Da
 
 def _format_candidate(row: pd.Series) -> str:
     genres = str(row.get("genres") or "").strip()
-    overview = str(row.get("overview") or "").strip()[:220]
+    overview = str(row.get("overview") or "").strip()[:100]
     director = str(row.get("director") or "").strip()
-    cast = ", ".join(str(row.get("top_cast") or "").split(",")[:4]).strip()
-    keywords = str(row.get("keywords") or "").strip()[:80]
     va = row.get("vote_average")
     rating = f"{float(va):.1f}/10" if pd.notna(va) and va else ""
     year = int(row.get("year") or 0)
     return (
-        f'[tmdb_id={int(row["tmdb_id"])}] "{row["title"]}" ({year})\n'
-        f"  Genres: {genres} | Rating: {rating} | Director: {director}\n"
-        f"  Cast: {cast}\n"
-        f"  Keywords: {keywords}\n"
-        f"  Overview: {overview}"
+        f'[{int(row["tmdb_id"])}] "{row["title"]}" ({year}) {rating} | {genres} | {director} | {overview}'
     )
 
 
-# ---------------------------------------------------------------------------
-# Few-shot examples that demonstrate the ideal description style:
-# personal, punchy, preference-linked, under 500 chars, no spoilers.
-# ---------------------------------------------------------------------------
-_FEW_SHOT = """EXAMPLES OF GREAT RECOMMENDATIONS (use these as style guides):
-
-Example A
-User preferences: "I love intense psychological thrillers with unexpected twists"
-Chosen tmdb_id: 157336
-Description: "If mind-bending twists are your thing, Interstellar will leave you speechless. Nolan sends a desperate father through a wormhole where time itself becomes the enemy — every revelation reframes everything before it. Gripping, emotional, and visually unlike anything else. One of the most debated endings in modern cinema."
-
-Example B
-User preferences: "funny feel-good movies I can watch with friends"
-Chosen tmdb_id: 120467
-Description: "The Grand Budapest Hotel is pure joy — Wes Anderson's wittiest, most delirious caper follows a legendary concierge and his loyal lobby boy through a hilarious murder mystery. Ralph Fiennes is a comedic revelation. It's laugh-out-loud funny, gorgeous to look at, and impossible not to love."
-
-Example C
-User preferences: "action-packed superhero films with great ensemble casts"
-Chosen tmdb_id: 299536
-Description: "Avengers: Infinity War is the superhero ensemble you've been waiting for. Every hero you love faces Thanos — the most formidable villain in the genre — in a film that actually has real stakes. The Russo brothers juggle a massive cast masterfully. Prepare for the most shocking finale in Marvel history."
+# Two brief few-shot examples showing the target description style.
+_FEW_SHOT = """EXAMPLES (style guide only):
+Prefs: "psychological thrillers with twists" → "Nolan bends reality itself — a crew dives into dreams-within-dreams with stakes that escalate every minute. If mind-bending twists are your thing, the ending will haunt you for days."
+Prefs: "funny feel-good films" → "Wes Anderson's wittiest caper: a legendary concierge caught in a hilarious murder mystery. Ralph Fiennes is a comedic revelation — gorgeous, laugh-out-loud, impossible not to love."
 """
 
 
@@ -160,26 +138,17 @@ def build_prompt(
     )
     movie_list = "\n\n".join(_format_candidate(row) for _, row in candidates.iterrows())
 
-    return f"""You are an expert film critic. Your job: pick the single best movie from the candidate list for this user, then write a pitch so compelling they immediately want to watch it.
+    return f"""You are a film critic. Pick the best movie from the list for this user and write a compelling pitch.
 
 {_FEW_SHOT}
----
-
-Now handle this user:
-
 USER PREFERENCES: "{preferences}"
-ALREADY WATCHED — NEVER recommend these: {history_text}
+ALREADY WATCHED (never recommend): {history_text}
 
-CANDIDATE MOVIES — pick exactly one tmdb_id from this list:
+CANDIDATES (pick exactly one tmdb_id):
 {movie_list}
 
-Step-by-step reasoning (do this internally before answering):
-1. What core genres, moods, and themes does this user want?
-2. Which candidate best satisfies ALL of those criteria?
-3. What 1-2 specific details about that film will excite THIS user?
-
-Output ONLY valid JSON — no markdown, no extra keys:
-{{"tmdb_id": <integer from the list>, "description": "<your pitch, max 500 chars, personal and exciting>"}}"""
+Write a description that directly references the user's preferences, under 500 chars.
+Output ONLY JSON: {{"tmdb_id": <integer>, "description": "<pitch under 500 chars>"}}"""
 
 
 def call_llm(prompt: str) -> dict:
@@ -204,7 +173,7 @@ def get_recommendation(preferences: str, history: list[str], history_ids: list[i
     """Return a dict with keys 'tmdb_id' (int) and 'description' (str)."""
     history_id_set = {int(i) for i in history_ids}
 
-    candidates = _select_candidates(preferences, history_id_set, n=15)
+    candidates = _select_candidates(preferences, history_id_set, n=8)
     prompt = build_prompt(preferences, history, history_ids, candidates)
     result = call_llm(prompt)
 
