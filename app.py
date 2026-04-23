@@ -35,6 +35,12 @@ async def recommend(request: RecommendationRequest):
     }
 
 
+@app.get("/")
+async def root():
+    return {"status": "ok"}
+
+
 @app.get("/health")
+@app.get("/kaithhealthcheck")
 async def health():
     return {"status": "ok"}
